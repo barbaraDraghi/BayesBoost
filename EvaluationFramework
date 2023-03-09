@@ -1,0 +1,199 @@
+# EVALUATION FRAMEWORK
+
+# The purpose is to carry out a comparative analysis between five data frames: original, uncertainty analysis, three different sizes bias-corrected (BB50, BB100, BB200)
+# Two different comparisons are proposed:
+# - Machine learning comparison by computing classification metrics by testing the original and corrected data on the test set extracted a priori in predicting the target disease using a Naive Bayes approach.
+# - Distribution comparison by displaying a grid with bar plots showing the proportions of subjects belonging to each category of the protected attribute.
+
+# Parameters needed:
+# - protectedAttribute
+# Dataframes needed:
+# - df.sample
+# - df.U
+# - BayesBoostList
+# - testSet extracted a priori
+
+require(ggplot2)
+require(gridExtra)
+require(scales)
+require(caret)
+
+
+
+# Machine learning comparison
+{
+
+  # Initialization
+{
+  n <- 10
+  DBiasMetrics <- list()
+  for(i in 1:4){
+    DBiasMetrics[[i]] <- list()
+  }
+  BB50Metrics <- list()
+  for(i in 1:4){
+    BB50Metrics[[i]] <- list()
+  }
+  BB100Metrics <- list()
+  for(i in 1:4){
+    BB100Metrics[[i]] <- list()
+  }
+  BB200Metrics <- list()
+  for(i in 1:4){
+    BB200Metrics[[i]] <- list()
+  }
+
+  df.AUC.ROC <- data.frame(matrix(0L, nrow = 1, ncol = 6))
+  colnames(df.AUC.ROC)  <- c("DBias", "BB50", "BB100", "BB200")
+  
+  df.AUC.PROC <- data.frame(matrix(0L, nrow = 1, ncol = 6))
+  colnames(df.AUC.PROC)  <- c("DBias", "BB50", "BB100", "BB200")
+  
+  
+}
+
+# Dataframes to test
+{ 
+  dataFrameToTest <- list()
+  dataFrameToTest[[1]] <- df.sample # is the sample extracted from ground truth data 
+  for(j in 1:length(BayesBoostList)){
+    dataFrameToTest[[1+j]] <- BayesBoostList[[j]]}
+}
+
+{
+# Build the formula.
+  xvars <- names(df.sample)[names(df.sample) != targetDisease]
+  form <- as.formula(paste(targetDisease, "~", paste(xvars, collapse = "+"))) 
+  
+  
+# For each dataframe to test:
+  for(k in 1:length(dataFrameToTest)){
+    
+    # Repeat n times
+    for(iter in 1:n){
+      
+      
+      testSetSample <- sample_n((testSet),round(0.25*nrow(testSet)))
+      
+      # Extract the test set Obs and Var
+      testSetSample.Obs <- testSetSample[,targetDisease]
+      testSetSample.Var <- testSetSample[, names(testSetSample) != targetDisease]
+      
+      
+      # Naive Bayes
+      {
+        df.model <- naiveBayes(form,dataFrameToTest[[k]])
+        df.predict <- predict(df.model,testSetSample.Var, type = 'raw')
+        df.predict <- df.predict[,2]
+        df.datapoints <- evalmod(mmdata((as.numeric(df.predict)),
+                                        (as.numeric(testSetSample.Obs)),modnames = c("df.model")))
+        
+        df.AUC.ROC[iter,k] <-  round(as.data.frame(attr( df.datapoints,'aucs'))$aucs[1], digits = 2)
+        df.AUC.PROC[iter,k] <-  round(as.data.frame(attr( df.datapoints,'aucs'))$aucs[2], digits = 2)
+        
+        
+        # Confusion Matrices and Metrics
+        {
+          xtab <- table(df.predict, testSetSample.Obs)
+          confusionMatrix <- confusionMatrix(as.factor(round(df.predict)), testSetSample.Obs, positive = '1')
+          confusionMatrix_Metrics <- confusionMatrix(as.factor(round(df.predict)), testSetSample.Obs, positive = '1')$byClass
+          
+          
+        }
+        
+        
+        if(k == 1){
+          DBiasMetrics[[1]][iter]  <- confusionMatrix$overall['Accuracy']
+          DBiasMetrics[[2]][iter]  <- confusionMatrix_Metrics['Precision']
+          DBiasMetrics[[3]][iter]  <- confusionMatrix_Metrics['Recall']
+          DBiasMetrics[[4]][iter]  <- confusionMatrix_Metrics['F1']
+          
+          
+        }
+        
+        if(k == 2){
+          BB50Metrics[[1]][iter]  <- confusionMatrix$overall['Accuracy']
+          BB50Metrics[[2]][iter]  <- confusionMatrix_Metrics['Precision']
+          BB50Metrics[[3]][iter]  <- confusionMatrix_Metrics['Recall']
+          BB50Metrics[[4]][iter]  <- confusionMatrix_Metrics['F1']
+          
+        }
+        if(k == 3){
+          BB100Metrics[[1]][iter]  <- confusionMatrix$overall['Accuracy']
+          BB100Metrics[[2]][iter]  <- confusionMatrix_Metrics['Precision']
+          BB100Metrics[[3]][iter]  <- confusionMatrix_Metrics['Recall']
+          BB100Metrics[[4]][iter]  <- confusionMatrix_Metrics['F1']
+        }
+        if(k == 4){
+          BB200Metrics[[1]][iter]  <- confusionMatrix$overall['Accuracy']
+          BB200Metrics[[2]][iter]  <- confusionMatrix_Metrics['Precision']
+          BB200Metrics[[3]][iter]  <- confusionMatrix_Metrics['Recall']
+          BB200Metrics[[4]][iter]  <- confusionMatrix_Metrics['F1']
+          
+        }
+
+      }
+      
+      
+    }
+    
+    
+  }
+  
+  
+}
+
+
+# t-test on accuracy
+DBias_ttest <- t.test(round(unlist(DBiasMetrics[[1]]),digits = 4))$estimate[[1]]
+BB50_ttest <- t.test(round(unlist(BB50Metrics[[1]]),digits = 4))$estimate[[1]]
+BB100_ttest <- t.test(round(unlist(BB100Metrics[[1]]),digits = 4))$estimate[[1]]
+BB200_ttest <- t.test(round(unlist(BB200Metrics[[1]]),digits = 4))$estimate[[1]]
+
+# PRECISION
+DBias_precision <- (mean(round(unlist(DBiasMetrics[[2]]),digits = 2)))
+BB50_precision <- (mean(round(unlist(BB50Metrics[[2]]),digits = 2)))
+BB100_precision <- (mean(round(unlist(BB100Metrics[[2]]),digits = 2)))
+BB200_precision <- print(mean(round(unlist(BB200Metrics[[2]]),digits = 2)))
+
+#RECALL
+DBias_recall <- (mean(round(unlist(DBiasMetrics[[3]]),digits = 2)))
+BB50_recall <- (mean(round(unlist(BB50Metrics[[3]]),digits = 2)))
+BB100_recall <- (mean(round(unlist(BB100Metrics[[3]]),digits = 2)))
+BB200_recall <- (mean(round(unlist(BB200Metrics[[3]]),digits = 2)))
+
+
+#F1
+DBias_F1 <-(mean(round(unlist(DBiasMetrics[[4]]),digits = 2)))
+BB50_F1 <-(mean(round(unlist(BB50Metrics[[4]]),digits = 2)))
+BB100_F1 <-(mean(round(unlist(BB100Metrics[[4]]),digits = 2)))
+BB200_F1 <-(mean(round(unlist(BB200Metrics[[4]]),digits = 2)))
+
+}
+
+
+# Distribution comparison
+barPlotsGrid <- function(df1, df2, df3, df4, df5, df1.description, df2.description, df3.description, df4.description, df5.description, var){
+
+maxYLim <- max(prop.table(table(df1[,var])),prop.table(table(df2[,var])),prop.table(table(df3[,var])) )
+  
+df1.barPlotList <- ggplot(df1, aes_string(x = var)) +  geom_bar(aes(y = (..count..)/sum(..count..))) + scale_y_continuous(labels = percent,breaks = seq(0, maxYLim, by=0.1), limits = c(0, maxYLim)) + ylab("Frequency %") + ggtitle(df1.description) + scale_x_discrete(labels = abbreviate)
+
+df2.barPlotList <- ggplot(df2, aes_string(x = var)) +  geom_bar(aes(y = (..count..)/sum(..count..))) + scale_y_continuous(labels = percent,breaks = seq(0, maxYLim, by=0.1), limits = c(0, maxYLim)) + ylab("Frequency %") + ggtitle(df2.description) + scale_x_discrete(labels = abbreviate) 
+
+df3.barPlotList <- ggplot(df3, aes_string(x = var)) +  geom_bar(aes(y = (..count..)/sum(..count..))) + scale_y_continuous(labels = percent,breaks = seq(0, maxYLim, by=0.1), limits = c(0, maxYLim)) + ylab("Frequency %") + ggtitle(df3.description) + scale_x_discrete(labels = abbreviate) 
+
+df4.barPlotList <- ggplot(df4, aes_string(x = var)) +  geom_bar(aes(y = (..count..)/sum(..count..))) + scale_y_continuous(labels = percent,breaks = seq(0, maxYLim, by=0.1), limits = c(0, maxYLim)) + ylab("Frequency %") + ggtitle(df4.description) + scale_x_discrete(labels = abbreviate) 
+
+df5.barPlotList <- ggplot(df4, aes_string(x = var)) +  geom_bar(aes(y = (..count..)/sum(..count..))) + scale_y_continuous(labels = percent,breaks = seq(0, maxYLim, by=0.1), limits = c(0, maxYLim)) + ylab("Frequency %") + ggtitle(df5.description) + scale_x_discrete(labels = abbreviate) 
+
+
+grid.arrange(df1.barPlotList, df2.barPlotList, df3.barPlotList, df4.barPlotList, df5.barPlotList, ncol=3)
+
+
+}
+
+barPlotsGrid(df.sample,df.U, BayesBoostList[[1]],BayesBoostList[[2]],BayesBoostList[[3]],"D_Bias","D_Unc","BB50","BB100","BB200","ethr")
+
+
+

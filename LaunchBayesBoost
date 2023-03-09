@@ -1,0 +1,45 @@
+# Script to launch BayesBoost
+
+# Load the functions
+source("BayesBoost/BayesBoost.R")
+
+# Data acquisition
+gt <- # specify your own dataframe
+targetDisease <- # specify the target disease
+protectedAttribute <- #specify the protected attribute
+}
+
+# Start the bias detection and correction procedure
+# convert to factors the columns that are supposed to be factors
+gt <- convertColumnsToFactor(gt)
+df <- gt
+
+# 0. Data Size Reduction
+sizeToSample <- dataSizeReduction(df, targetDisease)
+
+
+# 1. Extract the test set that will be used at the end for the evaluation
+{
+  # Extract test set and validation set
+  df.sample <- sample_n(df,round(sizeToSample*nrow(df)))
+  df <- anti_join(df,df.sample) #remove df.sample from df
+  
+  testSet <- sample_n(df, round(0.3*nrow(df.sample))) #extract test set from df
+  testSet.Obs <- testSet[,targetDisease]
+  testSet.Var <- testSet[, names(testSet) != targetDisease]
+}
+
+# 2. Uncertainty Analysis
+df.U <- uncertaintyAnalysis(df,df.sample, 0.4, 0.7, targetDisease, protectedAttribute)
+
+# 3. BayesBoost
+{
+  # Convert columns to factor
+  df.sample <- convertColumnsToFactor(df.sample)
+  df.U <- convertColumnsToFactor(df.U)
+  # Level the levels
+  df.sample <- levelTheLevels(df.sample,df.U)[[1]]
+  df.U  <- levelTheLevels(df.sample,df.U)[[2]]
+}
+
+BayesBoostList <- BayesBoost(df.sample, targetDisease, protectedAttribute, df.U)

@@ -1,0 +1,623 @@
+# R 
+
+packages <- c("DescTools","e1071", "bnlearn","precrec")
+install.packages(setdiff(packages, rownames(installed.packages())), dependencies = TRUE)
+
+library(DescTools) #for stratified sampling
+library(bnlearn) #for bayesian networks
+library(e1071) #for Naive Bayes
+library(precrec) #for ML performances
+library(dplyr) #for select_if
+
+# learnBN learns a Bayesian Network from a given dataframe
+# if the number of missing values is higher than 25% of data rows, the BN is learnt by using the structural.em function
+# otherwise, the hc function is applied after removing missing values from data
+learnBN <- function(df){
+    
+    cat('\nlearnBN\n')
+    
+
+    if(sum((sapply(df, function(y) sum(length(which(is.na(y)))))) > 0.25 * nrow(df))>0) {
+
+      bn.list  <- structural.em(df, maximize = "hc", maximize.args = list(), fit = "mle",
+                                fit.args = list(), impute = "parents", impute.args = list(), return.all = FALSE,
+                                start = NULL, max.iter = 1000, debug = FALSE)
+
+      bn.fitted <- bn.fit( bn.list, df)
+
+    } else
+    {
+      bn.list  <- hc(na.omit(df))
+      bn.fitted <- bn.fit(bn.list , df)
+      
+    }
+    
+    
+    return(bn.fitted)
+    
+  }
+
+# Level the factors levels
+# We need to have same levels for all the factors within two dataframes
+levelTheLevels <- function(df1,df2){
+  
+  factors <- colnames(dplyr::select_if(df1, is.factor))
+  for(i in factors){
+    if(nlevels(df1[,i])>nlevels(df2[,i])){
+      
+      levels(df2[,i]) <- c(levels(df2[,i]),subset(levels(df1[,i]), !(levels(df1[,i]) %in% levels(df2[,i]))))
+      
+    }else{
+      
+      if(nlevels(df2[,i])>nlevels(df1[,i])){
+        
+        levels(df1[,i]) <- c(levels(df1[,i]),subset(levels(df2[,i]), !(levels(df2[,i]) %in% levels(df1[,i]))))
+        
+        
+      }}}
+  
+  return(list(df1,df2))
+}  
+
+# Convert columns that are supposed to be categorical to factor
+convertColumnsToFactor <- function(df){
+  
+  # CONVERT ALL THE COLUMNS TO FACTOR
+  cat('conversion')
+  allColumns <- colnames(df)
+  
+  for (currentFactor in allColumns){
+    
+    if(length(unique(df[,currentFactor])) <= 15){
+      df[,currentFactor]<- as.factor(df[,currentFactor]) 
+    } 
+    
+  }
+  
+  return(df)
+}
+
+# order categorical variables based on how different are their distributions
+# between df1 and df2
+orderCategoricalVariableBasedOnDistributions <- function(df1,df2){
+    
+    discreteVar <- colnames(select_if(df1, is.factor))
+    orderedColumns <- as.data.frame(matrix(ncol=2, nrow = length(discreteVar) ))
+    names(orderedColumns) <- c('var','diff')
+    
+    
+    for(i in discreteVar){
+      orderedColumns[which(discreteVar==i),1] <- i 
+      orderedColumns[which(discreteVar==i),2] <- mean((abs(prop.table(table(na.omit(df1[,i])))-prop.table(table(na.omit(df2[,i])))))[(prop.table(table(na.omit(df1[,i])))-prop.table(table(na.omit(df2[,i])))!=0)])
+    }
+    
+    return(orderedColumns)
+    
+  }
+  
+# order numeric variables based on how different are their distributions
+# between df1 and df2
+orderNumericalVariableBasedOnDistributions <- function(df1,df2){
+    
+    numVar <- colnames(select_if(df1, is.numeric))
+    orderedColumns <- as.data.frame(matrix(ncol=2, nrow = length(numVar) ))
+    names(orderedColumns) <- c('var','diff')
+    
+    
+    for(i in numVar){
+      orderedColumns[which(numVar==i),1] <- i 
+      orderedColumns[which(numVar==i),2] <- mean((abs(summary(na.omit(df1[,i]))-summary(na.omit(df2[,i]))))[(summary(na.omit(df1[,i]))-summary(na.omit(df2[,i])))!=0])
+    }
+    
+    return(orderedColumns)
+    
+  }
+  
+# Sample boosting function
+# In this function, several dataframes are used:
+# df is the original R dataframe
+# df.U is the R dataframe resulting from the Uncertainty Analysis
+# df.output is the final resulting R dataframe from the sample boosting
+# df.unbiased and df.temporary are the temporary R dataframes needed to build the df.output 
+sampleBoost <- function(df.U, df, targetDisease, rowsToBoost, orderedVariables,bayesianNetwork,bayesianNetworkName){
+
+
+    df.bn.fitted <- bayesianNetwork # this set is needed to avoid errors
+    allColumns <- colnames(df.U)
+    allColumnsExeptTargetDisease <- allColumns[allColumns!=targetDisease]
+    
+    # initialize output dataframe
+    df.output <- as.data.frame(matrix(ncol=ncol(df), nrow = 0 ))
+    names(df.output) <- colnames(df)
+    
+    # convert all to factors
+    for(column in colnames(df.U)){
+      df.U[,column] <- as.factor(df.U[,column])
+    }
+    
+    
+    # For each uncertain case 
+    for(i in 1:nrow(df.U)){ print(i)
+      STOP = FALSE; # flag
+      
+      # build the evidence string only using not NULL variables values
+      {
+        evidenceString.List <- list()
+        list.count = 1
+        for( z in 1: length(allColumnsExeptTargetDisease)){
+          
+          if(!is.na(df.U[i,allColumnsExeptTargetDisease[z]])){ # the variable value is used as evidence only if != NA
+            evidenceString.List[[list.count]] <- paste("(", allColumnsExeptTargetDisease[z], "=='",
+                                             sapply(df.U[i,allColumnsExeptTargetDisease[z]], as.character), "')", sep = "")
+            
+            list.count = list.count + 1 
+          }
+        }
+        
+        evidenceString = paste(unlist(evidenceString.List),sep = "", collapse = " & ")
+         
+      }
+      
+      
+      # Nodes to predict
+      
+      # - It has to be said that we are including in the nodes to predict also the one used as evidence: their predicted value will be the same as the evidence.
+      # - This is just a choice to avoid writing more code, especially considering that this is not adding any computational time.
+      # - Another choice could be to remove the nodes used as evidence from the nodes to predict and then add copy and paste their values manually from df.U to the df.boosted.
+      {
+        nodesToPredict = "c("
+        for(j in 1:(length(allColumns))){
+          if(j == length(allColumns)){
+            nodesToPredict = paste0(nodesToPredict,"'",allColumns[j],"'" )}
+          else{
+            nodesToPredict = paste0(nodesToPredict, "'",allColumns[j],"'," )}
+        }
+        
+        nodesToPredict = paste0(nodesToPredict, ")")
+        
+      }
+      
+      df.temporary <- as.data.frame(matrix(ncol=ncol(df), nrow = 0 ))
+      names(df.temporary) <- colnames(df) #print(evidence)
+      
+      # repeat the process until we get the desired rows from the current df.U row
+      repeat{
+        
+        if((evidenceString) != ""){
+          
+          df.unbiased <- eval(parse( text = paste("cpdist(",bayesianNetworkName,", nodes = ",nodesToPredict,", evidence = ",evidenceString,")"))) 
+        }
+        else{
+          print("evidence null 1")
+          STOP = TRUE
+          break
+        }
+        
+        
+        # if cpdist return at least one row:
+        #    if cpdst return the desired number of row : BREAK
+        #    otherwise, save and repeat
+        
+        if(nrow(df.unbiased) > 0) {
+          if (nrow(df.unbiased) >= rowsToBoost) {
+            df.unbiased <- as.data.frame(df.unbiased[1:rowsToBoost, ])
+            names(df.unbiased) <- names(df.output)
+            break
+          } else{
+            df.temporary <- rbind(df.temporary, df.unbiased)
+            if (nrow(df.temporary) >= rowsToBoost) {
+              df.unbiased <- df.temporary
+              names(df.unbiased) <- names(df.output)
+              
+              break
+            } else{
+              next
+            }
+          }
+        }
+        
+        
+        else{  
+          # else
+          # reduce the number of columns to use as evidence
+          numberOfColumnsUsedAsEvidence = length(allColumnsExeptTargetDisease[which(!is.na(df.U[i,allColumnsExeptTargetDisease]))])
+          
+          
+          repeat {
+            
+            
+            allColumnsExeptTargetDisease <- orderedVariables
+            allColumnsExeptTargetDisease[!allColumnsExeptTargetDisease %in% colnames(df.U[, allColumnsExeptTargetDisease])[which(is.na(df.U[i, allColumnsExeptTargetDisease]))]]
+            allColumnsExeptTargetDisease <- allColumnsExeptTargetDisease[allColumnsExeptTargetDisease != targetDisease]
+            allColumnsExeptTargetDisease <- allColumnsExeptTargetDisease[1:numberOfColumnsUsedAsEvidence]
+            
+            
+            
+            # evidence string
+            evidenceString.List <- list()
+            list.count = 1
+            for (z in 1:length(allColumnsExeptTargetDisease)) {
+              if (!is.na(df.U[i, allColumnsExeptTargetDisease[z]])) {
+                evidenceString.List[[list.count]] <-
+                  paste("(",
+                        allColumnsExeptTargetDisease[z],
+                        "=='",
+                        sapply((df.U[i, allColumnsExeptTargetDisease[z]]), as.character),
+                        "')",
+                        sep = "")
+                list.count = list.count + 1
+              }
+            }
+            
+            evidenceString = paste(unlist(evidenceString.List), sep = "", collapse = " & ")
+            
+            
+            # If the number of variables to consider has been reduced to 1 only for both types of variables
+            # the string is built by only consider two values
+            if (numberOfColumnsUsedAsEvidence == 1) {
+              
+              if (!is.na(df.U[i, allColumnsExeptTargetDisease[1]])) {
+                evidenceString = paste("(",
+                             allColumnsExeptTargetDisease[1],
+                             "=='",
+                             sapply((df.U[i, allColumnsExeptTargetDisease[1]]), as.character),
+                             "')",
+                             sep = "")
+              } else{
+                evidenceString = ""
+              }
+              
+              
+            }
+            
+            repeat {
+              if((evidenceString) != ""){
+                df.unbiased <- eval(parse( text = paste("cpdist(",bayesianNetworkName,", nodes = ",nodesToPredict,", evidence = ",evidenceString,")"))) 
+              }
+              else{
+                STOP = TRUE
+                break
+              }
+              #print(evidence)
+              
+              # IF cpdist return at least one row:
+              #    if cpdist return the desired number of row : BREAK
+              #    otherwise, save and repeat
+              # ELSE
+              # keep reducing number of variables to use as evidence
+              
+              if (nrow(df.unbiased) > 0){
+                if (nrow(df.unbiased) >= rowsToBoost) {
+                  
+                  df.unbiased <- as.data.frame(df.unbiased[1:rowsToBoost, ])
+                  names(df.unbiased) <- names(df.output)
+                  STOP = TRUE
+                  break
+                } else{
+                  
+                  df.temporary <-
+                    rbind(df.temporary, df.unbiased)
+                  if (nrow(df.temporary) >= rowsToBoost) {
+                    STOP = TRUE
+                    df.unbiased <- df.temporary
+                    names(df.unbiased) <- names(df.output)
+                    break
+                  }
+                  else{
+                    
+                    next
+                  }
+                }
+              } else{ # reduce number of variables to use as evidence
+                
+                
+                if (numberOfColumnsUsedAsEvidence == 1) {
+                  STOP = TRUE
+                  break
+                }
+                
+                
+                numberOfColumnsUsedAsEvidence <- numberOfColumnsUsedAsEvidence - 1
+                
+                
+                break
+              }
+            }
+            
+            
+            if (STOP) {
+              break
+            }
+          }
+          
+          
+          
+          allColumnsExeptTargetDisease <- orderedVariables
+          allColumnsExeptTargetDisease <- allColumnsExeptTargetDisease[allColumnsExeptTargetDisease!= targetDisease]
+          
+          
+        }
+        
+        if(STOP){break}
+        
+      }
+      
+      
+      df.output <- rbind(df.output, df.unbiased)
+    }
+    
+    return(df.output)
+    
+  }
+  
+# convert date to char type -> Is this useful?
+convertDateToChar <- function(df){
+    columnsToConvert <- colnames(select_if(df,is.date))
+    for(colum in columnsToConvert){
+      df[,colum] <- as.character(df[,colum])
+    }
+    
+    return(df)
+  }
+  
+# convert char to factor -> This can probably be removed because of convertColumnsToFactor
+convertCharToFact <- function(df){
+    
+    columnsToConvert <- colnames(select_if(df,is.character))
+    for(column in columnsToConvert){
+      df[,column] <- as.factor(df[,column])
+      if(nlevels(df[,column]) <= 2){
+        levels(df[,column]) <- c("0","1")
+      }
+      
+      
+    } 
+    
+    
+    return(df)
+  }
+
+# Data Size Reduction
+dataSizeReduction <- function(df, targetDisease){
+  
+  print("into data size reduction")
+  # At each step:
+  #- AUCs
+  #- Differences between distributions: proportions and summary
+  #- Correlation matrices
+  iterations <- 3
+  df.AUC.ROC <- data.frame(matrix( 0L, nrow = iterations, ncol = 6))
+  colnames(df.AUC.ROC) <- c("gt","sample 10%","gt","sample 1%","gt","sample 0.1%")
+  df.AUC.PROC <- data.frame(matrix(0L, nrow = iterations , ncol = 6))
+  colnames(df.AUC.PROC) <- c("gt","sample 10%","gt","sample 1%","gt","sample 0.1%")
+  
+  # lists
+  df.proportions.list <- list()
+  df.proportions.list <- list()
+  df.cor.matrices <- list()
+  df.cor.matrices <- list()
+  wilcox.test.results.list <- list()
+  
+  sampleSizes <- c(0.6,0.5,0.4)
+  numericVariables <- colnames(select_if(df,is.numeric))
+  
+  for(iter in 1:iterations){ # for each iterations try the three sizes
+    
+    #print(iter)
+    # Extract test set and validation set
+    testSet <- sample_n(df, round(0.3*sampleSizes[1]*nrow(df)))
+    testSet.Obs <- testSet[,targetDisease]
+    testSet.Var <- testSet[, names(testSet) != targetDisease]
+    df.wo.test <- anti_join(df,testSet) # remove the test set from the df
+    
+    
+    # Build the formula.
+    allvars <- names(df)
+    xvars <- allvars[allvars != targetDisease]
+    form <- as.formula(paste(targetDisease, "~", paste(xvars, collapse = "+")))
+    
+    
+    for(i in 1:length(sampleSizes)){
+      
+      sampleSize <- sampleSizes[i]
+      
+      
+      # Extract tje data sample
+      df.sample <- sample_n(df.wo.test,round(nrow(df)*sampleSize))
+      
+      
+      # Machine Learning performances
+      {
+        # ground truth
+        df1.model <- naiveBayes(form, df.wo.test)
+        df1.predict <- predict(df1.model, testSet.Var, type = 'raw')
+        df1.predict <- df1.predict[,2]
+        df1.datapoints<-evalmod(mmdata(join_scores(as.numeric(df1.predict)),
+                                       join_labels(as.numeric(testSet.Obs)),
+                                       modnames = c("df1.model")))
+        df.AUC.ROC[iter,2*i-1] <-  round(as.data.frame(attr( df1.datapoints,'aucs'))$aucs[1], digits = 2)
+        df.AUC.PROC[iter,2*i-1] <-  round(as.data.frame(attr( df1.datapoints,'aucs'))$aucs[2], digits = 2)
+        
+        
+        # sample
+        df2.model <- naiveBayes(form, df.sample)
+        df2.predict <- predict(df2.model, testSet.Var, type = 'raw')
+        df2.predict <- df2.predict[,2]
+        df2.datapoints<-evalmod(mmdata(join_scores(as.numeric(df2.predict)),
+                                       join_labels(as.numeric(testSet.Obs)),
+                                       modnames = c("df2.model")))
+        
+        df.AUC.ROC[iter,2*i] <-  round(as.data.frame(attr( df2.datapoints,'aucs'))$aucs[1], digits = 2)
+        df.AUC.PROC[iter,2*i] <-  round(as.data.frame(attr( df2.datapoints,'aucs'))$aucs[2], digits = 2)
+        
+        
+      }
+      
+      
+    }}
+  
+  
+  
+  # Select the size
+  {
+    df.AUC.PROC[,c(3,5)] <- {}
+    df.AUC.ROC[,c(3,5)] <- {}
+    
+    ROC.diff <-data.frame(matrix(0L, nrow = nrow(df.AUC.ROC) , ncol = 3))
+    PR.diff <- data.frame(matrix(0L, nrow = nrow(df.AUC.PROC) , ncol = 3))
+    
+    for(i in 1:ncol(ROC.diff)){
+      ROC.diff[,i] <- df.AUC.ROC[,1]-df.AUC.ROC[,1+i]
+      PR.diff[,i] <- df.AUC.PROC[,1]-df.AUC.PROC[,1+i]
+    }
+    
+    # for(i in 1:2){
+    #
+    #   if((apply(ROC.diff,2,sum))[i+1] < apply(ROC.diff,2,sum)[i])
+    #   {
+    #     sizeToSample = sampleSizes[i + 1]}
+    #   else{
+    #     sizeToSample = sampleSizes[i]
+    #   }
+    # }
+  }
+  
+  
+  sizeToSample <- sampleSizes[which.min(apply(ROC.diff,2,sum))]
+  return(sizeToSample)
+}
+
+# Uncertainty Analysis
+# Pre-processing needed:
+# - convert to factor all the columns that aren't numeric 
+# # Data Preparation
+# factors <- colnames(df)[! colnames(df) %in% colnames(dplyr::select_if(df,is.numeric))]
+# for(currentFactor in factors){
+#   df[,currentFactor] <- as.factor(df[,currentFactor])
+# }
+# - omit not needed columns: ids
+# - omit dates
+# - keep the levels we are interest into. e.g in gender, we can omit I and U
+uncertaintyAnalysis <- function(df,df.sample, lowerLimitProbability, upperLimitProbability, targetDisease, protectedAttribute)
+{
+  
+  # Initialization
+  iterations <- 1
+  prob1 = lowerLimitProbability
+  prob2 = upperLimitProbability
+  
+  
+  # Start the pipeline
+  {
+    # Build the formula
+    allvars <- names(df.sample)
+    xvars <- allvars[allvars != targetDisease]
+    form <- as.formula(paste(targetDisease, "~", paste(xvars, collapse = "+"))) 
+    
+    # Uncertainty Analysis
+    {
+      # Identify U cases by testing NB classifier on a stratified validation set
+      validationSet <- dplyr:::sample_n(df, round(0.3*nrow(df.sample)))
+      #df.sample <- dplyr:::anti_join(df.sample,validationSet)# remove the validation set from the df
+      
+      validationSet <- DescTools:::Strata(validationSet, stratanames = protectedAttribute, method = 'srswr', 
+                                          size = rep(round(nrow(validationSet)/nlevels(df.sample[,protectedAttribute])), nlevels(df.sample[,protectedAttribute])))
+      
+      validationSet <- (validationSet[,!colnames(validationSet)%in% c('size','id','stratum')])
+      validationSet <- validationSet[,colnames(df.sample)]
+      validationSet.Obs <- validationSet[,targetDisease]
+      validationSet.Var <- validationSet[, names(validationSet) != targetDisease]
+      
+      
+      df.trainingSet <- df.sample
+      df.model <- e1071:::naiveBayes(form, df.trainingSet)
+      df.predict <- predict(df.model, validationSet.Var, type = 'raw')
+      df.predict <- df.predict[,2]
+      df.U <- validationSet[which(df.predict >= prob1 &  df.predict <= prob2),]
+    }
+    
+  } 
+  
+  return(df.U)
+} 
+
+# BayesBoost
+BayesBoost <- function(df, targetDisease, protectedAttribute, df.U)
+{
+  
+  # Initialization
+  {
+    iterations <- 1
+    prob1 = 0.4
+    prob2 = 0.7
+    df.boostedList <- list()
+    
+  }
+  
+  
+  # Start the pipeline
+  {
+    
+    # Order the variables based on how different the distributions are between original data and uncertain classified data
+    discreteVarOrdered <- orderCategoricalVariableBasedOnDistributions(df,df.U)
+    discreteVarOrdered <- discreteVarOrdered[order(-discreteVarOrdered[,2]),]
+    numericalVarOrdered <- orderNumericalVariableBasedOnDistributions(df,df.U)
+    numericalVarOrdered <- numericalVarOrdered[order(-numericalVarOrdered[,2]),]
+    numericalVarOrdered[,2] <- (numericalVarOrdered[,2]-min(numericalVarOrdered[,2]))/(max(numericalVarOrdered[,2])-min(numericalVarOrdered[,2]))
+    orderedVariables <- c(protectedAttribute,discreteVarOrdered[discreteVarOrdered[,1] != protectedAttribute,1],numericalVarOrdered[,1]) # put the protected attribute at the top
+    
+    # Boosting
+    {
+      # sample n rows to:
+      # - get half size of biased data
+      # - get same size of biased data
+      # - get double size of biased data
+      rowsToBoost.vector <- c(round(nrow(df)/(2*nrow(df.U))),
+                              round(nrow(df)/(1*nrow(df.U))),
+                              round(nrow(df)/(0.5*nrow(df.U))))
+    
+      # Convert to factor before learning the Bayesian Network
+      vars <- colnames(df)
+      vars <- vars[vars != targetDisease]
+      for(currentCol in vars){
+        df[,currentCol] <- as.factor(df[,currentCol])
+      }
+      
+      # Learn a BN 
+      #df.bn.fitted <<- learnBN(df)
+      df.bn.fitted <- learnBN(df)
+      print(typeof(df.bn.fitted))
+      bayesianNetworkName <- 'df.bn.fitted'
+      print('ok')
+
+      # Repeat the sample boost for each size
+      boosting.iterations <- length(rowsToBoost.vector)
+      for(boosting.iter in 1:boosting.iterations){
+        
+        #print(boosting.iter)
+        rowsToBoost <- rowsToBoost.vector[boosting.iter]
+        boosted  <- sampleBoost(df.U, df, targetDisease, rowsToBoost ,orderedVariables,df.bn.fitted,"df.bn.fitted")
+        df.boosted <- rbind(df,boosted)
+        df.boostedList [[boosting.iter]] <- df.boosted
+        
+      }
+      
+      
+    }
+    
+    # Convert back to numeric
+    numColumns <- colnames(select_if(df, is.numeric))
+    for(i in 1:length(df.boostedList )){
+      
+      for(column in numColumns){
+        
+        df.boostedList [[i]][,column] <- as.numeric(as.character(df.boostedList [[i]][,column]))
+      }
+    }
+    
+    
+    
+  } 
+  
+  return(df.boostedList)
+} #end BayesBoost

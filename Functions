@@ -380,11 +380,9 @@ convertCharToFact <- function(df){
 # Data Size Reduction
 dataSizeReduction <- function(df, targetDisease){
   
-  print("into data size reduction")
   # At each step:
   #- AUCs
-  #- Differences between distributions: proportions and summary
-  #- Correlation matrices
+
   iterations <- 3
   df.AUC.ROC <- data.frame(matrix( 0L, nrow = iterations, ncol = 6))
   colnames(df.AUC.ROC) <- c("gt","sample 10%","gt","sample 1%","gt","sample 0.1%")
@@ -547,9 +545,7 @@ BayesBoost <- function(df, targetDisease, protectedAttribute, df.U)
   
   # Initialization
   {
-    iterations <- 1
-    prob1 = 0.4
-    prob2 = 0.7
+    #iterations <- 1
     df.boostedList <- list()
     
   }

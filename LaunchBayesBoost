@@ -1,7 +1,7 @@
 # Script to launch BayesBoost
 
-# Load the functions
-source("BayesBoost/BayesBoost.R")
+# Load the functions contained in the Functions script
+source("BayesBoost/Functions.R")
 
 # Data acquisition
 gt <- # specify your own dataframe

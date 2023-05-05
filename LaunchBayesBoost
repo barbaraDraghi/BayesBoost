@@ -7,7 +7,7 @@ source("BayesBoost/Functions.R")
 gt <- # specify your own dataframe
 targetDisease <- # specify the target disease
 protectedAttribute <- #specify the protected attribute
-}
+
 
 # Start the bias detection and correction procedure
 # convert to factors the columns that are supposed to be factors
